@@ -16,7 +16,6 @@ fi
 
 DATA_PATH="./certbot"
 EMAIL="${CERTBOT_EMAIL:-}" # Optional: set CERTBOT_EMAIL in .env for expiry notifications
-RSA_KEY_SIZE=4096
 STAGING=0 # Set to 1 for testing to avoid rate limits
 
 echo "### Creating directories ..."
@@ -29,17 +28,27 @@ curl -s https://raw.githubusercontent.com/certbot/certbot/master/certbot-nginx/c
 curl -s https://raw.githubusercontent.com/certbot/certbot/master/certbot/certbot/ssl-dhparams.pem \
   > "$DATA_PATH/conf/ssl-dhparams.pem"
 
-echo "### Starting nginx with HTTP-only config (for ACME challenge) ..."
-docker compose down nginx 2>/dev/null || true
-docker compose run -d --name n8n-nginx-init \
+echo "### Stopping any running containers ..."
+docker compose down 2>/dev/null || true
+docker stop n8n-nginx-init 2>/dev/null || true
+docker rm n8n-nginx-init 2>/dev/null || true
+
+echo "### Starting temporary nginx for ACME challenge ..."
+docker run -d --name n8n-nginx-init \
   -p 80:80 \
   -v "$(pwd)/nginx/init.conf:/etc/nginx/conf.d/default.conf:ro" \
   -v "$(pwd)/certbot/www:/var/www/certbot:ro" \
-  --no-deps \
-  nginx
+  nginx:alpine
 
 echo "### Waiting for nginx to start ..."
-sleep 3
+sleep 2
+
+# Verify nginx is running
+if ! docker ps --filter name=n8n-nginx-init --format '{{.Status}}' | grep -q "Up"; then
+  echo "Error: nginx failed to start. Logs:"
+  docker logs n8n-nginx-init
+  exit 1
+fi
 
 echo "### Requesting Let's Encrypt certificate for $DOMAIN_NAME ..."
 
@@ -53,7 +62,10 @@ if [ -n "$EMAIL" ]; then
   EMAIL_ARG="--email $EMAIL"
 fi
 
-docker compose run --rm certbot certonly \
+docker run --rm \
+  -v "$(pwd)/certbot/conf:/etc/letsencrypt" \
+  -v "$(pwd)/certbot/www:/var/www/certbot" \
+  certbot/certbot certonly \
   --webroot \
   --webroot-path=/var/www/certbot \
   $STAGING_ARG \
@@ -63,7 +75,7 @@ docker compose run --rm certbot certonly \
   --no-eff-email \
   --force-renewal
 
-echo "### Stopping init nginx ..."
+echo "### Stopping temporary nginx ..."
 docker stop n8n-nginx-init && docker rm n8n-nginx-init
 
 echo "### Done! SSL certificate installed for $DOMAIN_NAME"
