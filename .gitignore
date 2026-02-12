@@ -1,0 +1,4 @@
+.env
+certbot/
+postgres_data/
+n8n_data/
